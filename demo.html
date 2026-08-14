@@ -1,0 +1,70 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Curious Life — instrument demo</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body {
+      min-height: 100vh; display: flex; flex-direction: column;
+      align-items: center; justify-content: center; gap: 1.2rem;
+      background: linear-gradient(180deg, #06080f, #0d1020);
+      color: #f0eadc; font-family: Georgia, serif;
+    }
+    canvas { width: min(92vw, 720px); height: 200px;
+             border: 1px solid rgba(200, 205, 240, 0.18); border-radius: 12px; }
+    b { font-size: 2rem; font-weight: 400; }
+    p { font-size: 0.85rem; color: rgba(240, 234, 220, 0.55); max-width: 34rem;
+        text-align: center; line-height: 1.5; padding: 0 1rem; }
+  </style>
+</head>
+<body>
+  <b id="z">…</b>
+  <canvas id="trace"></canvas>
+  <p>The live cumulative-deviation trace of this device's physical noise
+     against pure chance, and its windowed z-score. Nothing about you is
+     sensed; whether mind can lean it is the open question.</p>
+  <script src="instrument.js"></script>
+  <script>
+  (function () {
+    'use strict';
+    var c = document.getElementById('trace'), g = c.getContext('2d');
+    var zEl = document.getElementById('z');
+    function draw() {
+      requestAnimationFrame(draw);
+      var F = window.CLF;
+      var dpr = Math.min(window.devicePixelRatio || 1, 2);
+      var w = c.clientWidth, h = c.clientHeight;
+      if (!w) return;
+      if (c.width !== Math.round(w * dpr)) {
+        c.width = Math.round(w * dpr); c.height = Math.round(h * dpr);
+      }
+      g.setTransform(dpr, 0, 0, dpr, 0, 0);
+      g.clearRect(0, 0, w, h);
+      g.strokeStyle = 'rgba(200, 205, 240, 0.25)';
+      g.beginPath(); g.moveTo(0, h / 2); g.lineTo(w, h / 2); g.stroke();
+      if (!F || !F.trace || F.tcount < 2) return;
+      var n = F.tcount, TR = F.tlen;
+      var scale = 1;
+      for (var i = 0; i < n; i++) {
+        var v = Math.abs(F.trace[(F.thead - 1 - i + TR) % TR]);
+        if (v > scale) scale = v;
+      }
+      g.strokeStyle = 'rgba(224, 185, 106, 0.9)';
+      g.lineWidth = 1.5;
+      g.beginPath();
+      for (var k = 0; k < n; k++) {
+        var x = w - (k / (TR - 1)) * w;
+        var y = h / 2 - (F.trace[(F.thead - 1 - k + TR) % TR] / scale) * (h * 0.42);
+        if (k === 0) g.moveTo(x, y); else g.lineTo(x, y);
+      }
+      g.stroke();
+      zEl.textContent = (F.tcount > 12 && F.zNow >= 0 ? '+' : '') +
+        (F.tcount > 12 ? F.zNow.toFixed(2) : '…') + 'σ';
+    }
+    requestAnimationFrame(draw);
+  })();
+  </script>
+</body>
+</html>
