@@ -59,6 +59,50 @@ after every lapse in which bits are generated and judged but never committed.
 The verdict is published as `CLF.pumpOk`. If the browser stops the callbacks,
 sampling stops — nothing fills the quiet.
 
+## "Isn't this just measuring processor load?"
+
+A fair question, and the answer is precise: **load is an input to the
+probe's magnitude, but the magnitude is not what gets recorded.**
+
+The spin probe counts calls to `performance.now()` until the coarsened
+clock's next edge. That count's *size* — thousands of iterations — does
+track processor state: frequency scaling, thermal throttle, competing
+work. Those are slow signals, moving the count by many iterations over
+seconds.
+
+What the instrument records is the **XOR-debiased parity** of that count
+folded with two independent timestamps. The parity — the lowest bit —
+flips with sub-quantum microtiming: exactly where within the clock's
+granule the loop lands, which is set by scheduling and thermal noise at
+scales far below anything "load" describes. A slow drift in the count's
+magnitude leaves its parity distribution at a fair coin unless the
+stream degenerates outright — and degeneracy is what the recorded
+diagnostics exist to catch.
+
+The guards, concretely:
+
+- **Alternating XOR template**: any persistent parity bias — including
+  one a sustained load state could induce — is inverted on alternate
+  samples and cancels in the sum.
+- **Load-transition drops**: frames during scroll and after stalls are
+  discarded, because changing main-thread load is precisely what must
+  not masquerade as signal.
+- **Recorded self-tests**: adjacent-bit agreement (~50% for a healthy
+  stream), mean bit value, probe-saturation rate, and sampling cadence
+  ship with every session, so any analysis can exclude degraded streams
+  after the fact. Hidden-channel sampling refuses to commit bits at all
+  until those tests pass live.
+- **The empirical record**: across all recorded sessions the whole-record
+  deviation sits near chance. An instrument that simply transduced load
+  would show strong systematic bias per device and per session; it does
+  not.
+
+What remains true — and the header says it plainly — is that this is
+thermal and scheduling jitter from commodity hardware, **physical but
+not certified-quantum**. The only claim made is the deviation of a
+debiased microtiming parity stream from chance expectation. Anyone is
+welcome to test that claim harder; that is why this repository exists.
+
 ## The API
 
 Include the script; read the shared state:

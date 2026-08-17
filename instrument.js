@@ -97,7 +97,7 @@
         // each full-screen exercise is its own tag, so records filter
         var v = '';
         try { v = new URLSearchParams(location.search).get('v') || ''; } catch (e) {}
-        return 'x-' + (['three', 'osc', 'emo', 'forms', 'elems', 'sync', 'forms5', 'qual', 'oracle', 'chladni', 'orch'].indexOf(v) >= 0 ? v : 'three');
+        return 'x-' + (['three', 'osc', 'emo', 'forms', 'elems', 'sync', 'forms5', 'qual', 'oracle', 'chladni', 'orch', 'compass', 'snake'].indexOf(v) >= 0 ? v : 'three');
       })()
     : 'main';
 
