@@ -27,6 +27,11 @@
  * allow post-hoc filtering; and this is thermal/scheduling jitter, physical
  * but not certified-quantum. The page must never claim the field responds
  * to attention; the statistics accumulate toward whatever the truth is.
+ *
+ * Serial diagnostics: beyond lag-1 agreement, each segment records lag-2
+ * agreement and the variance of 8-bit block sums (expectation 2 per block
+ * for a fair independent stream). Together they bound correlation at the
+ * scales the trial statistics assume away - recorded, not gated.
  */
 (function () {
   'use strict';
@@ -121,6 +126,8 @@
   var trialLog = [];
   var segT = performance.now();
   var drops = 0, stalls = 0, sat = 0, agree = 0, bitsAll = 0, prevBit = -1;
+  var agree2 = 0, prevBit2 = -1;          // lag-2 agreement, same denominator
+  var v8 = 0, b8 = 0, blkSum = 0, blkN = 0;   // 8-bit block-sum variance
   var sunEl = document.getElementById('nav-sun');
 
   // the live trace: cumulative deviation of the bit stream (in bits above
@@ -241,7 +248,8 @@
     FIELD.agree01 = agreeEma; FIELD.sat01 = satEma;   // read-only diagnostics
     FIELD.bias01 = biasEma;
     if (bit === prevBit) agree++;
-    prevBit = bit; bitsAll++;
+    if (bit === prevBit2) agree2++;
+    prevBit2 = prevBit; prevBit = bit; bitsAll++;
     return bit;
   }
 
@@ -250,6 +258,8 @@
   function commit(bit) {
     sum += bit; s3[bits % 3] += bit; attnAcc += FIELD.attn; bits++;
     cum += bit - 0.5;
+    blkSum += bit;
+    if (++blkN === 8) { v8 += (blkSum - 4) * (blkSum - 4); b8++; blkSum = 0; blkN = 0; }
     if (++since === 8) {
       since = 0;
       trace[ti] = cum; ti = (ti + 1) % TR;
@@ -300,12 +310,14 @@
                    // while the page is hidden
       dur: Math.round((performance.now() - segT) / 1000),
       drops: drops, stalls: stalls, sat: sat, agree: agree, bits: bitsAll,
+      a2: agree2, v8: v8, b8: b8,
       tz: tz, scr: scr, hc: hc, dm: dm, pg: pg,
       t: trialLog,
     }));
     if (ok) {
       n = 0; dev = 0; dev2 = 0; an = 0; adev = 0; adev2 = 0; hzN = 0; hzSum = 0;
       drops = 0; stalls = 0; sat = 0; agree = 0; bitsAll = 0;
+      agree2 = 0; v8 = 0; b8 = 0;
       trialLog = []; segT = performance.now();
     }
   }
