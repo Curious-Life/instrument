@@ -28,6 +28,89 @@ Bits group into 200-bit trials (about six seconds each). The stream carries a
 live cumulative-deviation trace, a windowed z-score, and session statistics,
 exposed as `window.CLF` for any consumer to read.
 
+## Where the randomness comes from — and what it is not
+
+Honesty about provenance is the difference between an instrument and a
+prop, so here is the decomposition, plainly. Each recorded bit is the
+parity of a spin count, and that count's variability has three distinct
+sources:
+
+1. **Genuine physical noise.** Independent oscillators — the quartz
+   timebase behind `performance.now()`, the CPU's clock generator, the
+   display controller's clock — drift against each other with thermal
+   and flicker phase noise. This is real physical randomness, the same
+   class of process a laboratory REG amplifies from a diode junction. It
+   is present in every sample; its share of any single bit cannot be
+   certified.
+2. **Deterministic chaos.** Scheduler decisions, interrupts, cache and
+   branch-predictor state. Unpredictable in practice, classical in
+   principle — the standing of a coin flip's mechanics.
+3. **Browser-injected fuzz.** Browsers deliberately coarsen and jitter
+   their high-resolution clocks (Spectre-class mitigations), and that
+   injected jitter is *pseudorandom*: deterministic dead weight that
+   dilutes whatever else the sample carries.
+
+So the stream is **physical but not certified-quantum**, and no claim
+beyond that is ever made. A dedicated hardware generator has a cleaner
+pedigree; what this instrument has instead is scale, openness, and a
+null hypothesis that does not care where the noise comes from: after
+the alternating template, the stream must behave as a fair coin
+whatever mixture produced it, and the recorded serial diagnostics
+(lag-1 and lag-2 adjacent-bit agreement, 8-bit block-sum variance,
+saturation, cadence) bound how far it does.
+
+**What "signal" would mean here.** Only structure that (a) survives the
+balancing template — anything constant cancels by construction, which
+is a stated blind spot as much as a guard — and (b) correlates with a
+condition declared *before* the data arrived. That gives a fixed
+hierarchy of claim strength, stated on the site's
+[method page](https://curiouslife.is/method): randomly assigned aims
+(the Moon protocol) are the most defensible, since no hardware artifact
+can follow a shuffled aim; attended-versus-rest contrasts within one
+person come next; a lifetime lean after that; and variance readings
+last, because correlated bits distort second moments first. An ambient
+deviation with no pre-declared condition is never presented as signal.
+
+**The calibration is public.** The fleet's unattended record — the
+closest thing to a null the archive contains — is aggregated live,
+split by platform and pacing generation, at
+[`/api/field?cal=1`](https://curiouslife.is/api/field?cal=1), and the
+deeper structural analyses (autocorrelation spectra, count populations
+against the exact binomial, position effects) run openly at
+[curiouslife.is/observatory](https://curiouslife.is/observatory). An
+instrument bias would surface exactly where it lives, in a platform
+group, and small ones already have: they are on the board, not hidden.
+
+## The science and the history
+
+This instrument is not an invention; it is the newest link in a
+fifty-year chain, and the site it powers documents that chain with its
+critics quoted at full strength.
+
+Helmut Schmidt built the first quantum-noise machines for this question
+at Boeing in the late 1960s. Princeton's PEAR laboratory ran the
+benchmark experiment from 1979 to 2007: 91 unselected operators, 2.5
+million 200-bit trials under pre-stated intention, a high-versus-low
+separation of 0.042 bits per trial (z = 3.81), a seven-sigma composite
+across its true-random machines — and null results whenever the same
+operators aimed at deterministic pseudorandom sources, which is why
+this instrument refuses cryptographic conditioning. The Global
+Consciousness Project ran ~65 hardware generators worldwide against 500
+pre-registered events (1998–2015, composite Z = 7.31), and its critics
+— May and Spottiswoode, Scargle, and the project's own analyst Bancel —
+are part of the record. The meta-analytic battle (Radin & Nelson 1989;
+Bösch, Steinkamp & Boller 2006, "publication bias appears to be the
+easiest and most encompassing explanation," and the published replies)
+ended with both sides demanding the same discipline: pre-registration
+and permanent records. That discipline is what this codebase practices:
+fixed trials, pre-declared aims, diagnostics stored beside every
+segment, an archive that never resets, and analyses published beside
+their nulls.
+
+The full history: [curiouslife.is/research](https://curiouslife.is/research).
+The theory it serves: [curiouslife.is/consciousness](https://curiouslife.is/consciousness).
+The statistics and their limits: [curiouslife.is/method](https://curiouslife.is/method).
+
 ## The honesty principles
 
 1. **The page must never claim the field responds to attention.** The
@@ -87,11 +170,13 @@ The guards, concretely:
 - **Load-transition drops**: frames during scroll and after stalls are
   discarded, because changing main-thread load is precisely what must
   not masquerade as signal.
-- **Recorded self-tests**: adjacent-bit agreement (~50% for a healthy
-  stream), mean bit value, probe-saturation rate, and sampling cadence
-  ship with every session, so any analysis can exclude degraded streams
-  after the fact. Hidden-channel sampling refuses to commit bits at all
-  until those tests pass live.
+- **Recorded self-tests**: adjacent-bit agreement at lag 1 and lag 2
+  (~50% each for a healthy stream), 8-bit block-sum variance
+  (expectation 2 per block for independent bits), mean bit value,
+  probe-saturation rate, and sampling cadence ship with every session,
+  so any analysis can exclude degraded streams — or bound their
+  correlation structure — after the fact. Hidden-channel sampling
+  refuses to commit bits at all until those tests pass live.
 - **The empirical record**: across all recorded sessions the whole-record
   deviation sits near chance. An instrument that simply transduced load
   would show strong systematic bias per device and per session; it does
