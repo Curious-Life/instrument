@@ -229,3 +229,47 @@ curves, and autocorrelation.
 ## License
 
 MIT — see [LICENSE](LICENSE).
+
+
+## The load test: "it just measures CPU load"
+
+The most natural accusation against a timing-jitter instrument is that its
+bits simply follow CPU load. That claim is testable in six minutes, and the
+test ships in this repo as `loadtest.html`: open it over any local HTTP
+server (or at https://curiouslife.is/loadtest), press run, and it will
+alternate blocks of idle and full-core load (one busy-loop worker per
+core), tag every 8-bit segment of the stream with its condition, and
+compare the two pools. The protocol is fixed before the data arrive:
+
+- **Manipulation check** (must pass for the run to count): the spin count
+  and the collection rate must move under load, proving the stress bit.
+- **Leakage criteria**: the lean, the variance ratio, or the lag-1
+  autocorrelation differing between conditions by more than **3 standard
+  errors** declares leakage; anything less is chance.
+
+The raw tagged segments download as CSV, so the verdict can be re-derived
+by hand.
+
+**A reference run** (2026-08-21, macOS, 8 cores loaded, Chromium headless;
+raw summary in `results/loadtest-2026-08-21-darwin-8core.json`):
+
+| | idle | loaded | difference |
+|---|---|---|---|
+| 8-bit segments | 165 | 65 | |
+| spin count, median | 182 | 438 | 2.4x (timer coarsened) |
+| collection rate | 0.92/s | 0.36/s | 39% of idle |
+| lean, bits/segment | -0.067 | -0.062 | **+0.02 SE** |
+| variance ratio | 1.031 | 1.248 | **+1.05 SE** |
+| lag-1 autocorrelation | +0.057 | -0.082 | **-0.95 SE** |
+
+The load unmistakably moved the machine: the collection rate collapsed to
+39% and the timer's behavior visibly changed. The bit statistics did not
+follow: every difference sits deep inside the 3-SE line. Load changes the
+*magnitude* of the spin count; the instrument keeps only its *parity*,
+which rides the phase drift between independent clocks, and this is what
+that distinction looks like in data.
+
+One run on one machine proves nothing universal, which is the point of
+shipping the test: run it on your own hardware, and if your machine shows
+leakage beyond 3 SE with a passing manipulation check, that is a real
+finding about this design. Publish it; we will link it.

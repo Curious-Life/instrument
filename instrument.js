@@ -32,6 +32,16 @@
  * agreement and the variance of 8-bit block sums (expectation 2 per block
  * for a fair independent stream). Together they bound correlation at the
  * scales the trial statistics assume away - recorded, not gated.
+ *
+ * The control channel: a second stream drawn from the platform's
+ * cryptographically WHITENED generator (crypto.getRandomValues), run in
+ * lockstep through the identical pipeline — same pacing, same alternating
+ * template, same 200-bit trials, same attention tags. Whitening is designed
+ * to scrub any upstream deviation, so this channel should sit at chance
+ * forever; it is the yardstick the jitter channel is read against. If the
+ * jitter channel drifts while the control stays flat, the drift is not the
+ * pipeline's. Strictly parallel: it never touches the primary stream, the
+ * displays, or the honesty gates.
  */
 (function () {
   'use strict';
@@ -82,6 +92,23 @@
     fetch('/api/field?pid=' + pid, { credentials: 'same-origin' }).catch(function () {});
   }
 
+  // a segment name: one continuous same-pacing stretch of recording. A long
+  // hidden sitting (an overnight ambient session) checkpoints itself to the
+  // server every few minutes under one name, and the server folds the
+  // checkpoints back into the single row they are — so a phone the system
+  // quietly kills at 3am has still kept its night. The name rotates whenever
+  // a segment seals (any flush that is not a mid-sitting checkpoint).
+  function mintSeg() {
+    var s = '';
+    try {
+      var sb = new Uint8Array(8);
+      crypto.getRandomValues(sb);
+      for (var si = 0; si < 8; si++) s += (sb[si] + 256).toString(16).slice(1);
+    } catch (e) { s = ''; }
+    return s;
+  }
+  var seg = mintSeg();
+
   // session context, recorded once — device class, local-time offset, and
   // which page this instrument instance ran on (the stats page has no wave
   // field, so its trials are pure unattended baseline)
@@ -110,6 +137,23 @@
   var bits = 0, sum = 0, attnAcc = 0, s3 = [0, 0, 0];
   var n = 0, dev = 0, dev2 = 0, an = 0, adev = 0, adev2 = 0;
   var hzN = 0, hzSum = 0;
+
+  // the control channel's own books, kept beside the primary's
+  var csum = 0, ccount = 0, ctlTmpl = 0;
+  var cn = 0, cdev = 0, cdev2 = 0, can = 0, cadev = 0, cadev2 = 0;
+  var ctlBuf = null, ctlAt = 0;
+  var ctlOk = !!(window.crypto && crypto.getRandomValues);
+  function ctlBit() {
+    if (!ctlOk) return -1;
+    if (!ctlBuf || ctlAt >= 2048) {
+      if (!ctlBuf) ctlBuf = new Uint8Array(256);
+      try { crypto.getRandomValues(ctlBuf); } catch (e) { ctlOk = false; return -1; }
+      ctlAt = 0;
+    }
+    var b = (ctlBuf[ctlAt >> 3] >> (ctlAt & 7)) & 1;
+    ctlAt++;
+    return b ^ (ctlTmpl ^= 1);
+  }
   var sessN = 0, sessDev = 0;   // for display only — never flushed
   var warmSess = null;
   try { warmSess = JSON.parse(sessionStorage.getItem('clf_warm') || 'null'); } catch (e) {}
@@ -256,6 +300,9 @@
   function harvest(ts, d) { commit(probeBit(ts, d)); }
 
   function commit(bit) {
+    // the control walks in step: one whitened bit beside every real one
+    var cb = ctlBit();
+    if (cb >= 0) { csum += cb; ccount++; }
     sum += bit; s3[bits % 3] += bit; attnAcc += FIELD.attn; bits++;
     cum += bit - 0.5;
     blkSum += bit;
@@ -284,7 +331,17 @@
     var dv = sum - 100;
     n++; dev += dv; dev2 += dv * dv;
     if (trialLog.length < 1200) trialLog.push(sum, Math.round(attnAcc / 2));
-    if (attnAcc / 200 > 0.45) { an++; adev += dv; adev2 += dv * dv; }
+    var attended = attnAcc / 200 > 0.45;
+    if (attended) { an++; adev += dv; adev2 += dv * dv; }
+
+    // a control trial counts only when all 200 of its bits were drawn;
+    // it wears the same attention tag its real twin earned
+    if (ccount === 200) {
+      var cdv = csum - 100;
+      cn++; cdev += cdv; cdev2 += cdv * cdv;
+      if (attended) { can++; cadev += cdv; cadev2 += cdv * cdv; }
+    }
+    csum = 0; ccount = 0;
     sessN++; sessDev += dv;   // display totals: survive beacon flushes
     FIELD.sn = sessN;
     FIELD.sz = sessDev / Math.sqrt(50 * sessN);
@@ -296,14 +353,23 @@
     FIELD.w3 = clampW(FIELD.w3 * 0.985 + (s3[2] - 33.5) * 0.012);
 
     bits = 0; sum = 0; attnAcc = 0; s3[0] = s3[1] = s3[2] = 0;
+
+    // the night guard: a hidden sitting saves itself as it goes. The page's
+    // only other flushes ride visibility changes, and a screen that stays
+    // dark for eight hours never has one — everything would sit in memory,
+    // forfeit the moment iOS reclaims the process. Paced here, per trial,
+    // because the audio callbacks are the one clock a locked phone keeps.
+    if (document.hidden && performance.now() - segT > 300000) flush(true);
   }
 
-  function flush() {
+  function flush(checkpoint) {
     if (EMBED) return;
     if (n < 3) return;
     var hz = hzN ? Math.round(10000 / (hzSum / hzN)) / 10 : 0;
     var ok = navigator.sendBeacon('/api/field', JSON.stringify({
       n: n, dev: dev, dev2: dev2, an: an, adev: adev, adev2: adev2, hz: hz, pid: pid,
+      seg: seg || undefined,
+      cn: cn, cdev: cdev, cdev2: cdev2, can: can, cadev: cadev, cadev2: cadev2,
       pk: Math.round(FIELD.zPeak * 100) / 100, tr: Math.round(FIELD.zTrough * 100) / 100,
       iv: ivNow,   // instrument generation: 3 = timer-gated clock-edge jitter
                    // probe (rAF-paced); 4 = same probe, audio-callback-paced
@@ -318,7 +384,10 @@
       n = 0; dev = 0; dev2 = 0; an = 0; adev = 0; adev2 = 0; hzN = 0; hzSum = 0;
       drops = 0; stalls = 0; sat = 0; agree = 0; bitsAll = 0;
       agree2 = 0; v8 = 0; b8 = 0;
+      cn = 0; cdev = 0; cdev2 = 0; can = 0; cadev = 0; cadev2 = 0;
       trialLog = []; segT = performance.now();
+      FIELD.savedAt = Date.now();   // consumers may show "kept to HH:MM"
+      if (!checkpoint) seg = mintSeg();
     }
   }
   function saveWarm() {

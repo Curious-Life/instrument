@@ -1,0 +1,262 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="theme-color" content="#070912">
+  <title>Curious Life — The load test.</title>
+  <link rel="icon" type="image/svg+xml" href="curious-life-mark-gold.svg">
+  <meta name="robots" content="noindex">
+  <meta name="description" content="An adversarial self-test: does the instrument's bit stream follow CPU load? Alternating idle and full-load blocks, a manipulation check, and parity statistics decide. Run it on your own machine.">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Gentium+Plus:ital,wght@0,400;0,700;1,400&family=Figtree:wght@300..900&display=swap" rel="stylesheet">
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body {
+      min-height: 100vh;
+      background: linear-gradient(180deg, #06080f, #0b0e1c 55%, #0d1020);
+      font-family: 'Figtree', sans-serif;
+      color: #f0eadc;
+      padding: 4.5rem 1.2rem 6rem;
+    }
+    main { max-width: 760px; margin: 0 auto; }
+    h1 { font-family: 'Gentium Plus', Georgia, serif; font-weight: 400; font-size: clamp(1.9rem, 6vw, 2.6rem); color: #f2ead8; }
+    .k { font-size: 0.68rem; letter-spacing: 0.22em; color: rgba(224,185,106,0.7); text-transform: uppercase; margin-bottom: 1rem; }
+    p { font-size: 0.95rem; line-height: 1.7; color: rgba(240,234,220,0.62); margin-top: 0.9rem; max-width: 40rem; }
+    p b { color: #e0b96a; font-weight: 500; }
+    .row { display: flex; gap: 0.8rem; flex-wrap: wrap; margin-top: 1.3rem; align-items: center; }
+    button, select {
+      padding: 0.55rem 1.4rem; border: 1px solid rgba(224,185,106,0.55); border-radius: 999px;
+      background: none; color: #e0b96a; cursor: pointer;
+      font-family: 'Figtree', sans-serif; font-size: 0.88rem;
+    }
+    select { background: #0b0e1c; }
+    #live { margin-top: 1.4rem; font-size: 0.9rem; color: rgba(240,234,220,0.7); min-height: 1.4rem; font-variant-numeric: tabular-nums; }
+    #live b { color: #e0b96a; }
+    table { border-collapse: collapse; margin-top: 1.4rem; width: 100%; max-width: 640px; font-size: 0.85rem; font-variant-numeric: tabular-nums; }
+    th, td { text-align: right; padding: 0.45rem 0.8rem; border-bottom: 1px solid rgba(200,205,240,0.12); color: rgba(240,234,220,0.7); }
+    th { color: rgba(224,185,106,0.75); font-weight: 600; font-size: 0.72rem; letter-spacing: 0.08em; text-transform: uppercase; }
+    td:first-child, th:first-child { text-align: left; }
+    #verdict { margin-top: 1.4rem; font-family: 'Gentium Plus', Georgia, serif; font-size: 1.25rem; line-height: 1.5; color: #f2ead8; max-width: 40rem; }
+    #verdict.leak { color: #e08a6a; }
+    .fine { font-size: 0.78rem; color: rgba(240,234,220,0.45); }
+  </style>
+</head>
+<body>
+<main>
+  <div class="k">The instrument &middot; an adversarial self-test</div>
+  <h1>The load test.</h1>
+  <p><b>The accusation:</b> the instrument just measures CPU load. If that
+    is true, stressing every core must change the bit statistics: the lean,
+    the variance ratio, or the serial correlation.</p>
+  <p><b>The defense:</b> load changes the spin count&rsquo;s magnitude, but
+    the instrument keeps only its parity, which rides the phase noise
+    between independent clocks. Under full load the spin count must
+    collapse (the manipulation check), while the parity statistics stay
+    flat.</p>
+  <p>The protocol, fixed before the data arrive: alternating blocks of
+    idle and full-core load, each 8-bit segment of the stream tagged by
+    condition, the first two after each switch discarded. Leakage is declared if any of the
+    three statistics differ at more than <b>3 standard errors</b>. The
+    manipulation check must pass for the run to count. Everything is
+    computed on this device, and the raw trials can be downloaded.</p>
+  <div class="row">
+    <select id="dur">
+      <option value="quick">quick · 2 min</option>
+      <option value="standard" selected>standard · 6 min</option>
+      <option value="long">long · 20 min</option>
+    </select>
+    <button id="start" type="button">Run the test</button>
+    <button id="csv" type="button" hidden>Download the raw trials</button>
+  </div>
+  <div id="live"></div>
+  <div id="out"></div>
+  <div id="verdict"></div>
+  <p class="fine" id="sens"></p>
+</main>
+
+<script src="instrument.js"></script>
+<script>
+(function () {
+  'use strict';
+  var DURS = { quick: [4, 30], standard: [8, 45], long: [10, 120] };
+  var live = document.getElementById('live');
+  var out = document.getElementById('out');
+  var verdictEl = document.getElementById('verdict');
+  var running = false;
+  var rows = [];        // {type:'trial'|'c', ms, cond, v}
+  var workers = [];
+
+  function loadOn() {
+    var n = Math.max(2, navigator.hardwareConcurrency || 4);
+    var src = 'var x=0.5; while(1){ x = x*x*4*(1-x)/1.0000001 + 1e-12; }';
+    var url = URL.createObjectURL(new Blob([src], { type: 'text/javascript' }));
+    for (var i = 0; i < n; i++) workers.push(new Worker(url));
+  }
+  function loadOff() {
+    workers.forEach(function (w) { w.terminate(); });
+    workers = [];
+  }
+
+  // the same counting loop the instrument runs, replicated as a meter
+  function meterC() {
+    var t0 = performance.now(), c = 0;
+    while (performance.now() - t0 === 0 && c < 200000) c++;
+    return c;
+  }
+
+  // each observation is one 8-bit segment of the stream (the instrument
+  // commits its trace every 8 bits): expected mean 0, variance 2
+  var VAR0 = 2;
+  function stats(devs) {
+    var n = devs.length;
+    if (n < 3) return null;
+    var sum = 0, i;
+    for (i = 0; i < n; i++) sum += devs[i];
+    var m = sum / n;
+    var v = 0;
+    for (i = 0; i < n; i++) v += (devs[i] - m) * (devs[i] - m);
+    v /= (n - 1);
+    var ac = 0;
+    for (i = 0; i + 1 < n; i++) ac += (devs[i] - m) * (devs[i + 1] - m);
+    ac /= (n - 1) * v;
+    return { n: n, mean: m, z: sum / Math.sqrt(VAR0 * n), vr: v / VAR0, acf1: ac };
+  }
+  function med(a) {
+    if (!a.length) return 0;
+    var b = a.slice().sort(function (x, y) { return x - y; });
+    return b[Math.floor(b.length / 2)];
+  }
+  function f(x, d) { return (x >= 0 ? '+' : '−') + Math.abs(x).toFixed(d); }
+
+  function run() {
+    if (running) return;
+    running = true;
+    rows = [];
+    verdictEl.textContent = '';
+    out.innerHTML = '';
+    document.getElementById('sens').textContent = '';
+    document.getElementById('csv').hidden = true;
+    var cfg = DURS[document.getElementById('dur').value] || DURS.standard;
+    var BLOCKS = cfg[0], SECS = cfg[1];
+    var block = -1, cond = 'idle', switchAt = 0, skip = 0;
+    var t0 = performance.now(), lastCount = -1;
+
+    function nextBlock() {
+      block++;
+      if (block >= BLOCKS) return finish();
+      cond = block % 2 === 0 ? 'idle' : 'load';
+      if (cond === 'load') loadOn(); else loadOff();
+      skip = 2;
+      switchAt = performance.now() + SECS * 1000;
+    }
+    nextBlock();
+
+    var meter = setInterval(function () {
+      rows.push({ type: 'c', ms: Math.round(performance.now() - t0), cond: cond, v: meterC() });
+    }, 250);
+
+    var tick = setInterval(function () {
+      var now = performance.now();
+      if (now >= switchAt) nextBlock();
+      if (!running) return;
+      var C = window.CLF;
+      if (C && C.trace && C.tcount >= 2) {
+        if (lastCount === -1) lastCount = C.tcount;
+        while (C.tcount > lastCount) {
+          lastCount++;
+          var h = C.thead, TL = C.tlen || 240;
+          var back = C.tcount - lastCount;
+          var dev = Math.round(
+            C.trace[(h - 1 - back + 2 * TL) % TL] - C.trace[(h - 2 - back + 2 * TL) % TL]);
+          if (skip > 0) { skip--; continue; }
+          rows.push({ type: 'trial', ms: Math.round(now - t0), cond: cond, v: dev });
+        }
+      }
+      var ti = rows.filter(function (r) { return r.type === 'trial' && r.cond === 'idle'; }).length;
+      var tl = rows.filter(function (r) { return r.type === 'trial' && r.cond === 'load'; }).length;
+      live.innerHTML = 'block ' + (block + 1) + ' of ' + BLOCKS + ' · <b>' + cond.toUpperCase() +
+        '</b> · ' + Math.max(0, Math.ceil((switchAt - now) / 1000)) + 's · segments ' + ti + ' idle / ' + tl + ' load';
+    }, 120);
+
+    function finish() {
+      running = false;
+      loadOff();
+      clearInterval(meter);
+      clearInterval(tick);
+      live.textContent = 'done';
+      var devI = [], devL = [], cI = [], cL = [], spanI = 0, spanL = 0;
+      rows.forEach(function (r) {
+        if (r.type === 'trial') (r.cond === 'idle' ? devI : devL).push(r.v);
+        else (r.cond === 'idle' ? cI : cL).push(r.v);
+      });
+      spanI = BLOCKS / 2 * SECS; spanL = BLOCKS / 2 * SECS;
+      var si = stats(devI), sl = stats(devL);
+      if (!si || !sl) { verdictEl.textContent = 'Not enough trials; run it longer.'; return; }
+      var cmi = med(cI), cml = med(cL);
+      var rateI = si.n / spanI, rateL = sl.n / spanL;
+      var zdLean = (sl.mean - si.mean) / Math.sqrt(VAR0 / sl.n + VAR0 / si.n);
+      var zdVr = (sl.vr - si.vr) / Math.sqrt(2 / sl.n + 2 / si.n);
+      var zdAc = (sl.acf1 - si.acf1) / Math.sqrt(1 / sl.n + 1 / si.n);
+      var manip = (Math.abs(Math.log(Math.max(1, cml) / Math.max(1, cmi))) > 0.35) ||
+        (rateL < rateI * 0.85);
+
+      out.innerHTML = '<table><tr><th></th><th>idle</th><th>loaded</th><th>Δ in SE</th></tr>' +
+        '<tr><td>8-bit segments</td><td>' + si.n + '</td><td>' + sl.n + '</td><td></td></tr>' +
+        '<tr><td>spin count (median)</td><td>' + cmi + '</td><td>' + cml + '</td><td></td></tr>' +
+        '<tr><td>segments / s</td><td>' + rateI.toFixed(2) + '</td><td>' + rateL.toFixed(2) + '</td><td></td></tr>' +
+        '<tr><td>lean, bits per segment</td><td>' + f(si.mean, 3) + '</td><td>' + f(sl.mean, 3) + '</td><td>' + f(zdLean, 2) + '</td></tr>' +
+        '<tr><td>lean, z</td><td>' + f(si.z, 2) + '</td><td>' + f(sl.z, 2) + '</td><td></td></tr>' +
+        '<tr><td>variance ratio</td><td>' + si.vr.toFixed(3) + '</td><td>' + sl.vr.toFixed(3) + '</td><td>' + f(zdVr, 2) + '</td></tr>' +
+        '<tr><td>lag-1 autocorrelation</td><td>' + f(si.acf1, 3) + '</td><td>' + f(sl.acf1, 3) + '</td><td>' + f(zdAc, 2) + '</td></tr>' +
+        '</table>';
+
+      var leak = Math.abs(zdLean) > 3 || Math.abs(zdVr) > 3 || Math.abs(zdAc) > 3;
+      if (!manip) {
+        verdictEl.className = '';
+        verdictEl.textContent = 'Inconclusive: the load never bit. The spin count and trial rate barely moved, so this run cannot separate the hypotheses.';
+      } else if (leak) {
+        verdictEl.className = 'leak';
+        verdictEl.textContent = 'Leakage detected: the load moved the bit statistics beyond 3 standard errors. The accusation stands on this device; this result matters and should be reported.';
+      } else {
+        verdictEl.className = '';
+        verdictEl.textContent = 'The load moved the machine (spin count ' +
+          Math.round(100 * cml / Math.max(1, cmi)) + '% of idle, collection rate ' +
+          Math.round(100 * rateL / rateI) + '%), and the bit statistics did not follow: ' +
+          'lean, variance, and serial correlation all within 3 standard errors of the idle run. ' +
+          'On this device, the bits are not the load.';
+      }
+      document.getElementById('sens').textContent =
+        'Sensitivity: this run would have flagged a lean shift of ' +
+        (3 * Math.sqrt(VAR0 / sl.n + VAR0 / si.n)).toFixed(3) +
+        ' bits per segment, a variance-ratio shift of ' +
+        (3 * Math.sqrt(2 / sl.n + 2 / si.n)).toFixed(3) +
+        ', or a lag-1 shift of ' + (3 * Math.sqrt(1 / sl.n + 1 / si.n)).toFixed(3) +
+        '. Cores loaded: ' + (navigator.hardwareConcurrency || 'unknown') + '.';
+      document.getElementById('csv').hidden = false;
+      window.__loadtest = { idle: si, load: sl, cIdle: cmi, cLoad: cml,
+        rateIdle: rateI, rateLoad: rateL, zdLean: zdLean, zdVr: zdVr, zdAc: zdAc,
+        manip: manip, leak: leak, cores: navigator.hardwareConcurrency || 0 };
+    }
+  }
+
+  document.getElementById('start').addEventListener('click', run);
+  document.getElementById('csv').addEventListener('click', function () {
+    var csv = 'type,ms,cond,value\n' + rows.map(function (r) {
+      return r.type + ',' + r.ms + ',' + r.cond + ',' + r.v;
+    }).join('\n');
+    var a = document.createElement('a');
+    a.href = URL.createObjectURL(new Blob([csv], { type: 'text/csv' }));
+    a.download = 'loadtest.csv';
+    a.click();
+  });
+  var qs = new URLSearchParams(location.search);
+  if (qs.get('run')) {
+    document.getElementById('dur').value = qs.get('run');
+    setTimeout(run, 1500);
+  }
+})();
+</script>
+</body>
+</html>
