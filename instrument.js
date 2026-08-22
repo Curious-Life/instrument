@@ -172,6 +172,8 @@
   var drops = 0, stalls = 0, sat = 0, agree = 0, bitsAll = 0, prevBit = -1;
   var agree2 = 0, prevBit2 = -1;          // lag-2 agreement, same denominator
   var v8 = 0, b8 = 0, blkSum = 0, blkN = 0;   // 8-bit block-sum variance
+  var sgTape = '';   // the waves themselves: one digit (ones-count 0..8)
+                     // per committed segment, capped per flush
   var sunEl = document.getElementById('nav-sun');
 
   // the live trace: cumulative deviation of the bit stream (in bits above
@@ -306,7 +308,11 @@
     sum += bit; s3[bits % 3] += bit; attnAcc += FIELD.attn; bits++;
     cum += bit - 0.5;
     blkSum += bit;
-    if (++blkN === 8) { v8 += (blkSum - 4) * (blkSum - 4); b8++; blkSum = 0; blkN = 0; }
+    if (++blkN === 8) {
+      v8 += (blkSum - 4) * (blkSum - 4); b8++;
+      if (sgTape.length < 20000) sgTape += blkSum;   // 90 min per flush, ample
+      blkSum = 0; blkN = 0;
+    }
     if (++since === 8) {
       since = 0;
       trace[ti] = cum; ti = (ti + 1) % TR;
@@ -380,7 +386,7 @@
                    // while the page is hidden
       dur: Math.round((performance.now() - segT) / 1000),
       drops: drops, stalls: stalls, sat: sat, agree: agree, bits: bitsAll,
-      a2: agree2, v8: v8, b8: b8,
+      a2: agree2, v8: v8, b8: b8, sg: sgTape || undefined,
       tz: tz, scr: scr, hc: hc, dm: dm, pg: pg,
       t3: trialLog,   // [score, attention, epoch-second] triples
     }));
@@ -389,7 +395,7 @@
       drops = 0; stalls = 0; sat = 0; agree = 0; bitsAll = 0;
       agree2 = 0; v8 = 0; b8 = 0;
       cn = 0; cdev = 0; cdev2 = 0; can = 0; cadev = 0; cadev2 = 0;
-      trialLog = []; segT = performance.now();
+      trialLog = []; sgTape = ''; segT = performance.now();
       FIELD.savedAt = Date.now();   // consumers may show "kept to HH:MM"
       if (!checkpoint) seg = mintSeg();
     }
