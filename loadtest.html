@@ -141,7 +141,7 @@
     var cfg = DURS[document.getElementById('dur').value] || DURS.standard;
     var BLOCKS = cfg[0], SECS = cfg[1];
     var block = -1, cond = 'idle', switchAt = 0, skip = 0;
-    var t0 = performance.now(), lastCount = -1;
+    var t0 = performance.now(), lastCount = -1;   // lastCount tracks the ring head
 
     function nextBlock() {
       block++;
@@ -163,13 +163,14 @@
       if (!running) return;
       var C = window.CLF;
       if (C && C.trace && C.tcount >= 2) {
-        if (lastCount === -1) lastCount = C.tcount;
-        while (C.tcount > lastCount) {
-          lastCount++;
-          var h = C.thead, TL = C.tlen || 240;
-          var back = C.tcount - lastCount;
+        var TL = C.tlen || 240;
+        if (lastCount === -1) lastCount = C.thead;
+        var nNew = (C.thead - lastCount + TL) % TL;
+        var h0 = C.thead;
+        lastCount = h0;
+        for (var kk = nNew; kk > 0; kk--) {
           var dev = Math.round(
-            C.trace[(h - 1 - back + 2 * TL) % TL] - C.trace[(h - 2 - back + 2 * TL) % TL]);
+            C.trace[(h0 - kk + 2 * TL) % TL] - C.trace[(h0 - kk - 1 + 2 * TL) % TL]);
           if (skip > 0) { skip--; continue; }
           rows.push({ type: 'trial', ms: Math.round(now - t0), cond: cond, v: dev });
         }

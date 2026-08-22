@@ -250,24 +250,35 @@ compare the two pools. The protocol is fixed before the data arrive:
 The raw tagged segments download as CSV, so the verdict can be re-derived
 by hand.
 
-**A reference run** (2026-08-21, macOS, 8 cores loaded, Chromium headless;
-raw summary in `results/loadtest-2026-08-21-darwin-8core.json`):
+**A reference run** (2026-08-22, macOS, 8 cores loaded, Chromium headless;
+raw summary in `results/loadtest-2026-08-22-darwin-8core.json`):
 
 | | idle | loaded | difference |
 |---|---|---|---|
-| 8-bit segments | 165 | 65 | |
-| spin count, median | 182 | 438 | 2.4x (timer coarsened) |
-| collection rate | 0.92/s | 0.36/s | 39% of idle |
-| lean, bits/segment | -0.067 | -0.062 | **+0.02 SE** |
-| variance ratio | 1.031 | 1.248 | **+1.05 SE** |
-| lag-1 autocorrelation | +0.057 | -0.082 | **-0.95 SE** |
+| 8-bit segments | 667 | 669 | |
+| spin count, median | 186 | 465 | 2.5x (timer coarsened) |
+| collection rate | 3.71/s | 3.72/s | unchanged (frame-paced) |
+| lean, bits/segment | +0.072 | +0.021 | **-0.66 SE** |
+| variance ratio | 0.958 | 0.979 | **+0.26 SE** |
+| lag-1 autocorrelation | -0.041 | +0.001 | **+0.78 SE** |
 
-The load unmistakably moved the machine: the collection rate collapsed to
-39% and the timer's behavior visibly changed. The bit statistics did not
-follow: every difference sits deep inside the 3-SE line. Load changes the
-*magnitude* of the spin count; the instrument keeps only its *parity*,
-which rides the phase drift between independent clocks, and this is what
-that distinction looks like in data.
+The load unmistakably changed the machine's timing behavior: the spin
+count that the instrument derives its parity from moved by 2.5x. The bit
+statistics did not follow: every difference sits deep inside the 3-SE
+line, and the variance ratio shows the instrument's known slight
+under-dispersion equally in both conditions. Load changes the *magnitude*
+of the spin count; the instrument keeps only its *parity*, which rides
+the phase drift between independent clocks, and this is what that
+distinction looks like in data. Note also that the collection rate is
+frame-paced and does not move under load, so throughput itself carries no
+load signal into the record.
+
+*Correction, 2026-08-22: an earlier reference run published here was
+affected by a harness bug (the collector watched a saturating ring
+counter and silently stopped reading segments mid-run), which truncated
+its samples and produced a spurious rate difference. The harness now
+tracks the ring head; the run above supersedes it, with the original
+preserved in git history.*
 
 One run on one machine proves nothing universal, which is the point of
 shipping the test: run it on your own hardware, and if your machine shows
