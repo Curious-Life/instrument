@@ -330,7 +330,11 @@
 
     var dv = sum - 100;
     n++; dev += dv; dev2 += dv * dv;
-    if (trialLog.length < 1200) trialLog.push(sum, Math.round(attnAcc / 2));
+    // the tape entry: score, attention, and the absolute second - the
+    // synchrony analyses key on wall-clock simultaneity across devices
+    if (trialLog.length < 1800) {
+      trialLog.push(sum, Math.round(attnAcc / 2), Math.round(Date.now() / 1000));
+    }
     var attended = attnAcc / 200 > 0.45;
     if (attended) { an++; adev += dv; adev2 += dv * dv; }
 
@@ -378,7 +382,7 @@
       drops: drops, stalls: stalls, sat: sat, agree: agree, bits: bitsAll,
       a2: agree2, v8: v8, b8: b8,
       tz: tz, scr: scr, hc: hc, dm: dm, pg: pg,
-      t: trialLog,
+      t3: trialLog,   // [score, attention, epoch-second] triples
     }));
     if (ok) {
       n = 0; dev = 0; dev2 = 0; an = 0; adev = 0; adev2 = 0; hzN = 0; hzSum = 0;
