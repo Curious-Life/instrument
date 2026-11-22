@@ -54,6 +54,10 @@
   window.addEventListener('scroll', function () { lastScrollT = performance.now(); }, { passive: true });
   function scrolling() { return performance.now() - lastScrollT < 120; }
 
+  // one instrument per page: a second copy (activity.js racing the page's
+  // own tag) would record every bit twice
+  if (window.CLF && window.CLF.mark) return;
+
   var FIELD = window.CLF = {
     attn: 0, w1: 0, w2: 0, w3: 0,
     trace: null, tlen: 240, thead: 0, tcount: 0,
@@ -61,6 +65,17 @@
                                      // (a sustained negative run is as much
                                      // a signal as a positive one)
     sn: 0, sz: 0,           // whole-session trials and z (never reset by flush)
+    // the collector's own health, for the page to read and be honest about:
+    // slow = frames that arrived outside the 2-80 ms window the probe needs,
+    // scrolled = frames refused because the page was moving, fed = frames
+    // actually sampled. A page too heavy to draw in time stalls the reading
+    // completely, and the calibration must be able to SAY so rather than sit
+    // there. Monotonic, never flushed, display only.
+    slow: 0, scrolled: 0, fed: 0,
+    // the last 1024 committed bits, in order (read-only, for pages that
+    // draw or play the flips themselves): bitRing[n & 1023], n < bitN
+    bitRing: new Uint8Array(1024), bitN: 0,
+    loc: '',                // a place within the page, set by the page (CLF.mark): each change seals the segment, so readings stay with where they were taken
   };
 
   if (!navigator.sendBeacon) return;
@@ -86,8 +101,8 @@
       crypto.getRandomValues(idb);
       for (var ib = 0; ib < 12; ib++) pid += (idb[ib] + 256).toString(16).slice(1);
     }
-    if (pid) localStorage.setItem('clf_pid', pid);
-  } catch (e) { pid = ''; }
+  } catch (e) { pid = pid || ''; }
+  try { if (pid) localStorage.setItem('clf_pid', pid); } catch (e) { /* the cookie still carries it */ }
   if (pid && window.fetch && !EMBED) {
     fetch('/api/field?pid=' + pid, { credentials: 'same-origin' }).catch(function () {});
   }
@@ -119,21 +134,35 @@
     hc = navigator.hardwareConcurrency || 0;
     dm = navigator.deviceMemory || 0;
   } catch (e) {}
-  var pg = /exercises|development/.test(location.pathname) ? 'hub'
-    : /exercise/.test(location.pathname) ? 'game'
-    : /meditate/.test(location.pathname) ? 'med'
-    : /mycelium/.test(location.pathname) ? 'mind'
-    : /music/.test(location.pathname) ? 'music'
-    : /field/.test(location.pathname) ? 'stats'
-    : /live/.test(location.pathname) ? (function () {
-        // each full-screen exercise is its own tag, so records filter
-        var v = '';
-        try { v = new URLSearchParams(location.search).get('v') || ''; } catch (e) {}
-        return 'x-' + (['three', 'osc', 'emo', 'forms', 'elems', 'sync', 'forms5', 'qual', 'oracle', 'chladni', 'orch', 'compass', 'snake', 'moon', 'drift'].indexOf(v) >= 0 ? v : 'three');
-      })()
+  // the page itself, by its address, carried in loc whenever the page has
+  // not named a place of its own: 'main' covers many pages (Home, Ambient,
+  // tuning, the Pulse), and the record must still say which one it was.
+  // The solar meditation answers at five addresses; it is one page
+  var PAGE = (function () {
+    var parts = location.pathname.replace(/\.html$/, '').split('/').filter(function (x) { return x && x !== 'awareness'; });
+    var p = ((parts[0] || 'index').toLowerCase().replace(/[^a-z0-9-]+/g, '-').slice(0, 24)) || 'index';
+    return /^(noon|dawn|dusk|vigil|solar|solar-meditation)$/.test(p) ? 'solar' : p;
+  })();
+  // the page's group. A page that loads the instrument for the record alone
+  // (activity.js) names itself, so its trials never join another page's
+  // group. The practices read their variant from the page (live.html sets
+  // CLF_V before this runs: the clean addresses, /oscillator, /moon, ...,
+  // carry no ?v= since 2026-09-09, and the path alone said 'main')
+  var LIVE = ['three', 'osc', 'emo', 'forms', 'elems', 'sync', 'forms5', 'qual', 'oracle', 'chladni', 'orch', 'compass', 'snake', 'moon', 'drift', 'melt', 'ball'];
+  var pg = window.CLF_PG ? String(window.CLF_PG).slice(0, 24)
+    : window.CLF_V && LIVE.indexOf(window.CLF_V) >= 0 ? 'x-' + window.CLF_V
+    : PAGE === 'live' ? 'x-three'
+    : PAGE === 'exercises' || PAGE === 'development' ? 'hub'
+    : PAGE === 'exercise' || PAGE === 'star-trip' ? 'game'
+    : PAGE === 'meditate' ? 'med'
+    : PAGE === 'mycelium' ? 'mind'
+    : PAGE === 'music' ? 'music'
+    : /^spectral/.test(PAGE) ? 'spectral'
+    : PAGE === 'field' || PAGE === 'field-spectrum' ? 'stats'
     : 'main';
 
   var prev = -1, tmpl = 0, ivNow = 3;
+  var segPk = 0, segTr = 0;
   var bits = 0, sum = 0, attnAcc = 0, s3 = [0, 0, 0];
   var n = 0, dev = 0, dev2 = 0, an = 0, adev = 0, adev2 = 0;
   var hzN = 0, hzSum = 0;
@@ -181,6 +210,11 @@
   var TR = FIELD.tlen, trace = new Array(TR), ti = 0, tn = 0, cum = 0, since = 0;
   for (var z0 = 0; z0 < TR; z0++) trace[z0] = 0;
   FIELD.trace = trace;
+  // when each trace point was committed (performance.now ms, the page
+  // clock): a recorder stamps every 8-bit block with its own true time
+  // instead of reconstructing it at poll time. 0 = not known (a point
+  // carried over by the warm hand-over below)
+  var ttime = FIELD.ttime = new Float64Array(TR);
 
   // the warm hand-over: within one sitting, navigating between pages must
   // not restart the measurement. The leaving page saves its live trace;
@@ -215,9 +249,11 @@
     FIELD.attn *= 0.99;   // fades unless the tune section keeps writing it
     if (prev < 0) { prev = ts; return; }
     var d = ts - prev; prev = ts;
-    if (scrolling()) { drops++; return; }
-    if (!(d > 2 && d < 80)) { stalls++; return; }
+    if (scrolling()) { drops++; FIELD.scrolled++; return; }
+    if (!(d > 2 && d < 80)) { stalls++; FIELD.slow++; return; }
     hzN++; hzSum += d;
+    FIELD.fed++; rafFed++;
+    label(3);
     harvest(ts, d);
   }
 
@@ -238,18 +274,61 @@
   // proof holds, FIELD.pumpOk is true and consumers may sound; the
   // moment it fails, sampling stops committing and pumpOk falls — and
   // nothing is ever invented to fill the quiet.
-  var pumpPrev = -1, pumpProb = 0;
+  var pumpPrev = -1, pumpProb = 0, rafFed = 0;
   var agreeEma = 0.5, satEma = 0, biasEma = 0.5;   // stream health, per bit
   FIELD.pumpAt = 0; FIELD.pumpHz = 0; FIELD.pumpOk = false;
+  // pumpCallAt: the last time the audio pipeline called at all (whether
+  // or not the sample was committed); pumpWhy: why the last call was
+  // not committed. Read-only diagnostics, so a recorder can tell a
+  // stopped clock from a stream that failed its proof.
+  FIELD.pumpCallAt = 0; FIELD.pumpWhy = '';
   function pumpDown() { FIELD.pumpOk = false; pumpProb = 0; }
   FIELD.pump = function () {
+    FIELD.pumpCallAt = performance.now();
     if (!document.hidden) { pumpPrev = -1; FIELD.pumpHz = 0; pumpDown(); return; }
+    paced(4);
+  };
+  // AND THE SAME DOOR FOR A THROTTLED FRAME CLOCK. A page in front of you
+  // can still be denied its frames: a browser may run requestAnimationFrame
+  // at a handful a second for reasons of its own, and then EVERY sample
+  // falls outside the 2-80 ms window the probe needs and the reading never
+  // starts at all - no trace, no calibration, and the exercise sits there.
+  // The answer is not to widen the window and take bad samples. It is to
+  // pace the probe from a timer instead, and to hold that stream to exactly
+  // the same proof the hidden channel must pass: cadence, adjacent-bit
+  // agreement near a fair coin's, mean near a half, saturation not pinned,
+  // and a probation run that is judged and thrown away. It carries its own
+  // instrument generation (5) so the record can always tell the two apart,
+  // and it stands down the moment real frames come back.
+  var slowT = null, slowOn = false;
+  FIELD.timerPaced = false;
+  function slowTick() {
+    if (document.hidden) return;              // that is the pump's business
+    if (rafFed - slowFedMark > 2) {           // real frames are arriving again
+      slowOn = false; FIELD.timerPaced = false; pumpPrev = -1; pumpDown();
+      clearInterval(slowT); slowT = null; return;
+    }
+    paced(5);
+  }
+  var slowFedMark = 0, slowWatch = 0;
+  setInterval(function () {
+    if (slowOn || document.hidden) return;
+    // armed only after several seconds in which frames were refused and
+    // almost none accepted: a slow page, not a busy moment
+    if (FIELD.slow > 40 && FIELD.slow > rafFed * 6) {
+      if (++slowWatch < 3) return;
+      slowOn = true; FIELD.timerPaced = true; slowFedMark = rafFed;
+      pumpPrev = -1; pumpProb = 0;
+      slowT = setInterval(slowTick, 31);
+    } else { slowWatch = 0; }
+  }, 1000);
+  function paced(gen) {
     var now = performance.now();
     if (pumpPrev < 0) { pumpPrev = now; return; }
     var d = now - pumpPrev;
     if (d < 20) return;             // audio buffers can come thick; keep spacing
     pumpPrev = now;
-    if (d >= 400) { stalls++; pumpDown(); return; }
+    if (d >= 400) { stalls++; pumpDown(); FIELD.pumpWhy = 'stall'; return; }
     FIELD.pumpHz = FIELD.pumpHz ? FIELD.pumpHz * 0.9 + 100 / d : 1000 / d;
     FIELD.pumpAt = now;
     var bit = probeBit(now, d);
@@ -265,14 +344,23 @@
                   agreeEma > 0.16 && agreeEma < 0.84 &&
                   biasEma > 0.25 && biasEma < 0.75 &&
                   satEma < 0.95;
-    if (!healthy) { pumpDown(); return; }
-    if (pumpProb < 16) { pumpProb++; return; }   // probation: judged, not kept
-    FIELD.pumpOk = true;
-    if (n === 0) ivNow = 4;         // a clean segment boundary takes the label
+    if (!healthy) {
+      FIELD.pumpWhy = FIELD.pumpHz < 8 ? 'cadence' : !(agreeEma > 0.16 && agreeEma < 0.84) ? 'agreement'
+        : !(biasEma > 0.25 && biasEma < 0.75) ? 'bias' : 'saturation';
+      pumpDown(); return;
+    }
+    // probation: judged and thrown away. Longer for the timer pacer, which
+    // is the weaker probe and is never the only way to read the page
+    if (pumpProb < (gen === 5 ? 48 : 16)) { pumpProb++; FIELD.pumpWhy = 'probation'; return; }
+    if (gen === 4) FIELD.pumpOk = true;   // the hidden channel's own licence
+    FIELD.pumpWhy = '';
+
+    label(gen);
     FIELD.attn *= 0.99;
     hzN++; hzSum += d;
+    FIELD.fed++;
     commit(bit);
-  };
+  }
 
   function probeBit(ts, d) {
     // jitter probe: spin until the coarsened high-res clock ticks over,
@@ -301,7 +389,42 @@
 
   function harvest(ts, d) { commit(probeBit(ts, d)); }
 
+  // every segment carries exactly one pacing label. A change of pacer
+  // seals the segment so far under its own label; when it holds too few
+  // trials to send (fewer than three), those trials are dropped from the
+  // server record rather than carried into a segment of the other kind.
+  // (They were: a short visible stretch's label used to cover a whole
+  // hidden night.) The live trace and any recorder keep every bit.
+  function label(gen) {
+    if (ivNow === gen) return;
+    // (a seal the browser refused to send keeps its trials: they ride into
+    // the next segment rather than vanish)
+    if (n > 0) { flush(); if (n > 0 && n < 3) resetAcc(); }
+    ivNow = gen;
+  }
+
+  // one record per device at a time: the app's pages open in a frame over
+  // the Pulse floor, and each runs its own instrument. The framed one says
+  // so to the page beneath every two seconds while it commits bits; the
+  // page beneath stands aside (its bits are not committed) until the
+  // frame falls quiet for six, as it does when the app goes to the
+  // background and only the floor's audio clock still runs
+  var yieldUntil = 0, aliveAt = 0;
+  var FRAMED = false;
+  try { FRAMED = window.self !== window.top && window.parent.location.host === location.host; } catch (e) {}
+  window.addEventListener('message', function (e) {
+    if (e.origin !== location.origin || e.source === window || !e.data || e.data.clf !== 'inst-alive') return;
+    yieldUntil = performance.now() + 6000;
+  });
+  FIELD.yielded = 0;
   function commit(bit) {
+    var bitT = performance.now();
+    if (bitT < yieldUntil) { FIELD.yielded++; return; }
+    if (FRAMED && !EMBED && bitT - aliveAt > 2000) {
+      aliveAt = bitT;
+      try { window.parent.postMessage({ clf: 'inst-alive', page: PAGE }, location.origin); } catch (e) {}
+    }
+    FIELD.bitRing[FIELD.bitN & 1023] = bit; FIELD.bitN++;
     // the control walks in step: one whitened bit beside every real one
     var cb = ctlBit();
     if (cb >= 0) { csum += cb; ccount++; }
@@ -315,7 +438,7 @@
     }
     if (++since === 8) {
       since = 0;
-      trace[ti] = cum; ti = (ti + 1) % TR;
+      trace[ti] = cum; ttime[ti] = bitT; ti = (ti + 1) % TR;
       if (tn < TR) tn++;
       FIELD.thead = ti; FIELD.tcount = tn;
       if (tn > 12) {
@@ -323,6 +446,8 @@
         FIELD.zNow = zw;
         if (zw > FIELD.zPeak) FIELD.zPeak = zw;
         if (zw < FIELD.zTrough) FIELD.zTrough = zw;
+        if (zw > segPk) segPk = zw;      // the row's own, earned in this segment
+        if (zw < segTr) segTr = zw;
         // the nav's mini sun. tanh spends most of the dial on the z range
         // sessions actually visit (|z| < 1.5), so ordinary swings are
         // visibly different states, not tremors around the midpoint
@@ -364,12 +489,15 @@
 
     bits = 0; sum = 0; attnAcc = 0; s3[0] = s3[1] = s3[2] = 0;
 
-    // the night guard: a hidden sitting saves itself as it goes. The page's
-    // only other flushes ride visibility changes, and a screen that stays
-    // dark for eight hours never has one — everything would sit in memory,
-    // forfeit the moment iOS reclaims the process. Paced here, per trial,
-    // because the audio callbacks are the one clock a locked phone keeps.
-    if (document.hidden && performance.now() - segT > 300000) flush(true);
+    // the night guard: a sitting saves itself as it goes, every five
+    // minutes, seen or not. The page's only other flushes ride visibility
+    // changes and leaving; a screen that stays dark for eight hours, or a
+    // tab left open on a desk for a day, never has one — everything would
+    // sit in memory, forfeit to a crash or the moment iOS reclaims the
+    // process. Paced here, per trial, because the audio callbacks are the
+    // one clock a locked phone keeps. Each save is a checkpoint of one
+    // segment, so its trial log and tape stay whole however long it runs.
+    if (performance.now() - segT > 300000) flush(true);
   }
 
   function flush(checkpoint) {
@@ -380,26 +508,60 @@
       n: n, dev: dev, dev2: dev2, an: an, adev: adev, adev2: adev2, hz: hz, pid: pid,
       seg: seg || undefined,
       cn: cn, cdev: cdev, cdev2: cdev2, can: can, cadev: cadev, cadev2: cadev2,
-      pk: Math.round(FIELD.zPeak * 100) / 100, tr: Math.round(FIELD.zTrough * 100) / 100,
-      iv: ivNow,   // instrument generation: 3 = timer-gated clock-edge jitter
+      pk: Math.round(segPk * 100) / 100, tr: Math.round(segTr * 100) / 100,
+      iv: ivNow,   // instrument generation: 3 = timer-gated clock-edge jitter,
+                   // 4 = audio-paced while hidden, 5 = timer-paced past a throttled frame clock
                    // probe (rAF-paced); 4 = same probe, audio-callback-paced
                    // while the page is hidden
       dur: Math.round((performance.now() - segT) / 1000),
       drops: drops, stalls: stalls, sat: sat, agree: agree, bits: bitsAll,
       a2: agree2, v8: v8, b8: b8, sg: sgTape || undefined,
-      tz: tz, scr: scr, hc: hc, dm: dm, pg: pg,
+      tz: tz, scr: scr, hc: hc, dm: dm, pg: pg, loc: FIELD.loc || PAGE,
       t3: trialLog,   // [score, attention, epoch-second] triples
     }));
     if (ok) {
-      n = 0; dev = 0; dev2 = 0; an = 0; adev = 0; adev2 = 0; hzN = 0; hzSum = 0;
-      drops = 0; stalls = 0; sat = 0; agree = 0; bitsAll = 0;
-      agree2 = 0; v8 = 0; b8 = 0;
-      cn = 0; cdev = 0; cdev2 = 0; can = 0; cadev = 0; cadev2 = 0;
-      trialLog = []; sgTape = ''; segT = performance.now();
+      resetAcc();
       FIELD.savedAt = Date.now();   // consumers may show "kept to HH:MM"
       if (!checkpoint) seg = mintSeg();
     }
   }
+  function resetAcc() {
+    n = 0; dev = 0; dev2 = 0; an = 0; adev = 0; adev2 = 0; hzN = 0; hzSum = 0;
+    drops = 0; stalls = 0; sat = 0; agree = 0; bitsAll = 0;
+    agree2 = 0; v8 = 0; b8 = 0;
+    cn = 0; cdev = 0; cdev2 = 0; can = 0; cadev = 0; cadev2 = 0;
+    trialLog = []; sgTape = ''; segT = performance.now();
+    segPk = 0; segTr = 0;
+  }
+  function place(loc) {
+    loc = String(loc || '').slice(0, 40); if (loc === FIELD.loc) return; flush(); FIELD.loc = loc;
+  }
+  var ownPlaces = false, autoEx = '', autoPlay = '';
+  FIELD.mark = function (loc) {   // the page names where it is; the segment so far is sealed under the old name (if it holds three trials; fewer carry on into the next)
+    ownPlaces = true; place(loc);
+  };
+  // what is being done, read from the page's own activity rows (CLF_LOG):
+  // an exercise or a sound names the stretch it ran in, 'page:thing', and
+  // its end returns the stretch to the page. A page that names its own
+  // places (FIELD.mark) keeps them; this stands aside
+  function slug(x) { return String(x || '').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 14); }
+  FIELD.auto = function (kind, d, page) {
+    if (ownPlaces || EMBED) return;
+    d = d || {};
+    // the Pulse beneath the app's pages hears their rows too, and names
+    // the stretch by the page that is doing it (page is that page's name)
+    var where = page ? String(page).toLowerCase().replace(/[^a-z0-9-]+/g, '-').slice(0, 24) : PAGE;
+    // two slots: an exercise outranks a sound, so a card's preview or a
+    // bed stopping inside an exercise does not unname the exercise
+    if (kind === 'exercise-start') autoEx = slug(d.ex);
+    else if (kind === 'exercise-end') autoEx = '';
+    else if (kind === 'play-start') autoPlay = slug(d.journey || (d.themes && d.themes[0]) || d.name || d.kind);
+    else if (kind === 'play-change' && d.what === 'themes' && d.themes) autoPlay = slug(d.themes[0]);
+    else if (kind === 'play-stop') autoPlay = '';
+    else return;
+    var what = autoEx || autoPlay;
+    place(what ? where + ':' + what : '');
+  };
   function saveWarm() {
     if (EMBED) return;
     try {
@@ -415,7 +577,7 @@
     else {
       // returning: seal the hidden-paced segment under its own label and
       // let the vsync-paced one start clean
-      if (ivNow === 4) { flush(); ivNow = 3; }
+      if (ivNow === 4 || ivNow === 5) flush();   // the next frame's label(3) seals any rest
       pumpPrev = -1; prev = -1; FIELD.pumpHz = 0; pumpDown();
     }
   });

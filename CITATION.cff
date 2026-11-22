@@ -1,0 +1,33 @@
+cff-version: 1.2.0
+message: "If you use this instrument, please cite it as below."
+title: "Curious Life instrument: a browser-based clock-jitter random event generator"
+abstract: "An open-source instrument that collects physical timing noise in a web browser and turns it into a bit stream for mind-matter interaction experiments, with a control channel, stored diagnostics, a load-leakage test and a public calibration record."
+type: software
+authors:
+  - family-names: Balodis
+    given-names: Martin
+    affiliation: "Curious Life"
+    orcid: "https://orcid.org/0009-0001-2010-2480"
+repository-code: "https://github.com/Curious-Life/instrument"
+url: "https://curiouslife.is/method"
+license: MIT
+doi: "10.5281/zenodo.24438226"
+version: "1.0.0"
+date-released: "2026-11-22"
+keywords:
+  - random event generator
+  - timing jitter
+  - entropy source
+  - mind-matter interaction
+  - calibration
+  - open science
+references:
+  - type: article
+    status: preprint
+    title: "A browser-based clock-jitter random event generator: design, diagnostics and calibration"
+    authors:
+      - family-names: Balodis
+        given-names: Martin
+        orcid: "https://orcid.org/0009-0001-2010-2480"
+    year: 2026
+    doi: "10.5281/zenodo.24438518"

@@ -9,6 +9,20 @@ science. The exercises, visuals, and sounds built on top of it live on the
 site; everything they express is generated from the readings this file
 produces.
 
+## The paper, and how to cite
+
+The design, the diagnostics and the calibration are written up in
+[`paper/paper.md`](paper/paper.md): *A browser-based clock-jitter random
+event generator: design, diagnostics and calibration*
+([doi:10.5281/zenodo.24438518](https://doi.org/10.5281/zenodo.24438518);
+PDF in [`paper/paper.pdf`](paper/paper.pdf)). It reports where the
+stream holds as a fair coin and where it does not, including the variance
+deficit that appears when the probe saturates on coarse-timer browsers.
+
+To cite the code, use the metadata in [`CITATION.cff`](CITATION.cff)
+(GitHub's "Cite this repository" button reads it). Release v1.0.0 is
+archived on Zenodo: [doi:10.5281/zenodo.24438226](https://doi.org/10.5281/zenodo.24438226).
+
 ## What it measures
 
 The instrument collects physical noise from the device it runs on: the
@@ -24,7 +38,7 @@ Samples fold into bits. Debiasing is a PEAR-style alternating XOR template,
 **not** a cryptographic hash: a hash would scrub exactly the kind of small
 statistical deviation the instrument exists to record.
 
-Bits group into 200-bit trials (about six seconds each). The stream carries a
+Bits group into 200-bit trials (about seven seconds each). The stream carries a
 live cumulative-deviation trace, a windowed z-score, and session statistics,
 exposed as `window.CLF` for any consumer to read.
 
@@ -131,8 +145,8 @@ The statistics and their limits: [curiouslife.is/method](https://curiouslife.is/
 
 ## Always-on sampling
 
-The collector is normally paced by the animation loop (timer-gated to ~35
-samples/s so it never drives the display's refresh rate). When the page is
+The collector is normally paced by the animation loop (timer-gated; about 28
+samples/s in the recorded fleet, so it never drives the display's refresh rate). When the page is
 hidden but an audio pipeline keeps rendering, the pipeline's callbacks pace
 the same probe (`CLF.pump`). Hidden-paced segments are recorded as their own
 instrument generation (`iv 4`), and the hidden channel must continuously
@@ -141,6 +155,19 @@ near a fair coin's 50%, saturation below a backstop, and a probation run
 after every lapse in which bits are generated and judged but never committed.
 The verdict is published as `CLF.pumpOk`. If the browser stops the callbacks,
 sampling stops — nothing fills the quiet.
+
+A page in front of you can be denied its frames too: a browser may run
+`requestAnimationFrame` at a handful a second, and then every sample falls
+outside the 2–80 ms window the probe needs. When refused frames outnumber
+accepted ones six to one for three seconds running, a 31 ms timer paces the
+probe instead (`CLF.timerPaced`), held to the same proof as the hidden
+channel with a longer probation (48 samples), and it stands down the moment
+real frames return. Those segments carry `iv 5`.
+
+Every segment carries exactly one pacing label. A change of pacer seals the
+segment so far; a sealed stretch shorter than three trials is not sent.
+A long sitting checkpoints itself every five minutes under one segment
+name, and the server folds the checkpoints into one row.
 
 ## "Isn't this just measuring processor load?"
 
@@ -154,7 +181,8 @@ work. Those are slow signals, moving the count by many iterations over
 seconds.
 
 What the instrument records is the **XOR-debiased parity** of that count
-folded with two independent timestamps. The parity — the lowest bit —
+folded with two independent timestamps. The parity — the XOR of every bit
+of that folded word, so it turns over whenever the lowest bit does —
 flips with sub-quantum microtiming: exactly where within the clock's
 granule the loop lands, which is set by scheduling and thermal noise at
 scales far below anything "load" describes. A slow drift in the count's
@@ -205,6 +233,12 @@ Include the script; read the shared state:
   //   attn            attention level, written by a host page, decaying here
   //   pump(), pumpOk, pumpHz, pumpAt   the hidden-channel contract
   //   agree01, sat01, bias01           stream-health diagnostics
+  //   pumpWhy, pumpCallAt              why the last paced sample was refused, and when
+  //   timerPaced      true while the timer pacer (iv 5) is carrying the reading
+  //   slow, scrolled, fed              frames refused as late, refused for scroll, sampled
+  //   bitRing, bitN   the last 1024 committed bits, in order
+  //   ttime           when each trace point was committed (performance.now ms)
+  //   mark(loc), loc  the page names where it is; each change seals the segment
   //   restart()       flush and begin a fresh visible session
 </script>
 ```
@@ -241,8 +275,9 @@ alternate blocks of idle and full-core load (one busy-loop worker per
 core), tag every 8-bit segment of the stream with its condition, and
 compare the two pools. The protocol is fixed before the data arrive:
 
-- **Manipulation check** (must pass for the run to count): the spin count
-  and the collection rate must move under load, proving the stress bit.
+- **Manipulation check** (must pass for the run to count): the median spin
+  count must move by a factor of more than 1.4 under load, or the
+  collection rate must fall by 15%, proving the stress bit.
 - **Leakage criteria**: the lean, the variance ratio, or the lag-1
   autocorrelation differing between conditions by more than **3 standard
   errors** declares leakage; anything less is chance.
